@@ -6,6 +6,7 @@ import soundcloud
 import requests
 import os
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -41,13 +42,14 @@ def resolve_spotify(url):
 
 def resolve_youtube(url):
     """Extract song details from a YouTube Music URL."""
-    video_id = url.split("=")[-1]
+    # Extract video ID from the URL, handling additional parameters
+    video_id = url.split("v=")[1].split("&")[0] if "v=" in url else url.split("/")[-1]
     song = ytmusic.get_song(videoId=video_id)
     return {
         "title": song["videoDetails"]["title"],
         "artists": [song["videoDetails"]["author"]],
         "album": None,
-        "cover_url": f"https://i.ytimg.com/vi/{video_id}/0.jpg",
+        "cover_url": song["videoDetails"]["thumbnail"]["thumbnails"][-1]["url"],
         "length": song["videoDetails"]["lengthSeconds"],
         "video_id": video_id,
         "url": url
@@ -75,8 +77,8 @@ def resolve_soundcloud(url):
             return {
                 "title": resolved_track.title,
                 "artists": [resolved_track.user.username],
-                "album": None,  # SoundCloud doesn't have albums in the same way
-                "cover_url": resolved_track.artwork_url,
+                # SoundCloud doesn't have albums in the same way
+                "cover_url": re.sub(r'-large\.(jpg|jpeg|png)', r'-t500x500.\1', resolved_track.artwork_url) if resolved_track.artwork_url else None,
                 "length": resolved_track.duration / 1000,  # in seconds
                 "soundcloud_id": resolved_track.id,
                 "url": url

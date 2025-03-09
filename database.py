@@ -49,11 +49,9 @@ def save_song(db: Session, song_data):
     
 
 
-def get_song(song_id):
+def get_song(db: Session, song_id):
     """Fetch song details from the database by ID."""
-    db = SessionLocal()
     song = db.query(Song).filter(Song.id == song_id).first()
-    db.close()
     return song
 
 def search_song(db: Session, title: str, artist: str):

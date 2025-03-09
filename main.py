@@ -3,33 +3,38 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from fastapi.openapi.utils import get_openapi
+from fastapi.middleware.cors import CORSMiddleware  # Add this import
 from sqlalchemy.orm import Session
 from uuid import uuid4
 from database import SessionLocal, save_song, get_song, search_song
-from resolver import resolve_spotify, resolve_youtube, resolve_soundcloud, resolve_deezer,search_spotify, search_youtube, search_deezer, search_soundcloud
+from resolver import resolve_spotify, resolve_youtube, resolve_soundcloud, resolve_deezer, search_spotify, search_youtube, search_deezer, search_soundcloud
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For production, replace with your Next.js app URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
         title="GiveMeASong API",
-        version="1-beta",
+        version="2-beta",
         description="Просте та швидке API для Пінчани, яке знаходить пісню по посиланню на всіх (поки що зроблених) платформах.",
         routes=app.routes,
-        
     )
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 app.openapi = custom_openapi
 
-# Set up templates and static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
 
 # Database dependency
 def get_db():
@@ -39,43 +44,11 @@ def get_db():
     finally:
         db.close()
 
-# Set up templates and static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-
-# Database dependency
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    """Render the homepage with a search form."""
-    return templates.TemplateResponse("index.html", {"request": request})
-
-
-@app.get("/resolve", response_class=HTMLResponse, responses={
-    200: {
-        "content": {"application/json": {}}
-    },
-    400: {
-        "content": {"application/json": {}}
-    },
-    500: {
-        "content": {"application/json": {}}
-    }
-})
+@app.get("/resolve")
 async def resolve_music_url(request: Request, url: str = Query(...), db: Session = Depends(get_db)):
     """Find the song and update it with new platform data if needed."""
     if "spotify.com" not in url and "music.youtube.com" not in url and "deezer.com" not in url and "soundcloud.com" not in url:
-        if request.headers.get("accept") == "application/json":
-            return JSONResponse({"error": "Invalid URL"}, status_code=400)
-        return templates.TemplateResponse("index.html", {"request": request, "error": "Invalid URL", "song_data": None})
+        return JSONResponse({"error": "Invalid URL"}, status_code=400)
 
     song_data = None
     try:
@@ -83,22 +56,17 @@ async def resolve_music_url(request: Request, url: str = Query(...), db: Session
             song_data = resolve_spotify(url)
         elif "music.youtube.com" in url:
             song_data = resolve_youtube(url)
-            print(song_data)
         elif "deezer.com" in url:
             song_data = resolve_deezer(url)
         elif "soundcloud.com" in url:
             song_data = resolve_soundcloud(url)
         else:
-            if request.headers.get("accept") == "application/json":
-                return JSONResponse({"error": "Unsupported platform"}, status_code=400)
-            return templates.TemplateResponse("index.html", {"request": request, "error": "Unsupported platform", "song_data": None})
+            return JSONResponse({"error": "Unsupported platform"}, status_code=400)
     except Exception as e:
-        if request.headers.get("accept") == "application/json":
-            return JSONResponse({"error": str(e)}, status_code=500)
-        return templates.TemplateResponse("index.html", {"request": request, "error": str(e), "song_data": None})
+        return JSONResponse({"error": str(e)}, status_code=500)
 
     if song_data is None:
-        return RedirectResponse(url="/", status_code=303)
+        return JSONResponse({"error": "Could not resolve song"}, status_code=500)
 
     title = song_data["title"]
     artists = song_data["artists"]
@@ -138,17 +106,15 @@ async def resolve_music_url(request: Request, url: str = Query(...), db: Session
     # Save song
     save_song(db, song_data)
 
-    if request.headers.get("accept") == "application/json":
-        return JSONResponse(song_data, status_code=200)
+    return song_data
 
-    return RedirectResponse(url=f"/song/{song_id}", status_code=303)
-
-@app.get("/song/{song_id}", response_class=HTMLResponse)
-def get_song_details(song_id: str, request: Request, _db: Session = Depends(get_db)):
-    """Display song details and update with any newly available platforms."""
-    song = get_song(song_id) # Access the database to get the song
+@app.get("/song/{song_id}")
+def get_song_details(song_id: str, request: Request, db: Session = Depends(get_db)):
+    """Return song details as JSON and update with any newly available platforms."""
+    song = get_song(db, song_id)
     if not song:
-        return HTMLResponse("<h1>Song not found</h1>", status_code=404)
+        return JSONResponse({"error": "Song not found"}, status_code=404)
+    
     # Check for newly available platforms
     spotify_data = search_spotify(song.title, song.artist)
     youtube_music_data = search_youtube(song.title, song.artist)
@@ -161,18 +127,19 @@ def get_song_details(song_id: str, request: Request, _db: Session = Depends(get_
         "deezer": deezer_data,
         "soundcloud": soundcloud_data,
     }
-    new_platforms = {k: v for k, v in new_platforms.items() if v and k not in (song.platforms or {})}
+    existing_platforms = song.platforms or {}
+    new_platforms = {k: v for k, v in new_platforms.items() if v and k not in existing_platforms}
 
     if new_platforms:
         # Update existing song with new platforms
-        song.platforms = {**(song.platforms or {}), **new_platforms}
-        _db.commit()
+        song.platforms = {**existing_platforms, **new_platforms}
+        save_song(db, song)
 
-    return templates.TemplateResponse(
-        "song.html",
-        {
-            "request": request,
-            "song": song,
-            "platforms": song.platforms,
-        },
-    )
+    # Return song data formatted for the frontend
+    return {
+        "id": song.id,
+        "title": song.title,
+        "artist": song.artist,
+        "cover_url": getattr(song, "cover_url", None),
+        "platforms": song.platforms
+    }
