@@ -21,6 +21,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Change OpenAPI URL to /gmas/openapi.json
+app.openapi_url = "/gmas/openapi.json"
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
